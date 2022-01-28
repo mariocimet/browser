@@ -1,37 +1,48 @@
 import socket
+import ssl
 
 
-# Use socket to connect to the host, implementation of https://en.wikipedia.org/wiki/Berkeley_sockets
-    # These are all defaults so this block is the equivalent of calling socket.socket()
-    # AF = Address family, because it's a web browser we use INET6 instead of, say UNIX or BLUETOOTH.
-    # Note: INET6 is compatible w/ IPv6 and backwards-compatible w/ IPv4
-    # STREAM=Streaming, allows arbitrary data to be sent in a, well, stream. Common alternative is SOCK_DGRAM which requires packets of a specific size
-    # RAW, RDM, and SEQPACKET are also allowed but are very rare.
-    # IPPROTO = which protocol to use, TCP is the most common (the handshakey one). Alternatives include UDP or Google's implementation of it, QUIC 
 
-s = socket.socket(
+
+def request(url):
+    # Use socket to connect to the host, implementation of https://en.wikipedia.org/wiki/Berkeley_sockets
+        # AF = Address family, because it's a web browser we use INET6 instead of, say UNIX or BLUETOOTH.
+        # Note: INET6 is compatible w/ IPv6 and backwards-compatible w/ IPv4
+        # STREAM=Streaming, allows arbitrary data to be sent in a, well, stream. Common alternative is SOCK_DGRAM which requires packets of a specific size
+        # RAW, RDM, and SEQPACKET are also allowed but are very rare.
+        # IPPROTO = which protocol to use, TCP is the most common (the handshakey one). Alternatives include UDP or Google's implementation of it, QUIC 
+        # These are all defaults so this block is the equivalent of calling socket.socket()
+    
+    s = socket.socket(
     family=socket.AF_INET,
     type=socket.SOCK_STREAM,
     proto=socket.IPPROTO_TCP,
 )
-def request(url):
-    #Split the URL into parts 
 
-    #Scheme, aka *how to get the info*
-    assert url.startswith("http://")
-    url = url[len("http://"):]
-    # Host and path describe where to get and what to get
+    # Split the URL into parts 
+        # Scheme, describes how to retrieve the resource
+        # Host and path describe where to get it and what to get from it
+    scheme, url = url.split("://", 1)
+    assert scheme in ["http", "https", "file"], \
+    "Unknown scheme {}".format(scheme)
     host, path = url.split("/", 1)
+
+    if ":" in host:
+      host, port = host.split(":", 1)
+      port = int(port)
+    
     path = "/" + path
+    port = 80 if scheme == "http" else 443
 
-    s.connect((host, 80))
 
-    # build request string
-    # want to use string interpolation for path and host, but you need to send the data in binary
-    # and you can't use binary f-strings, see: https://www.python.org/dev/peps/pep-0498/#no-binary-f-strings
+    if scheme == "https":
+      ctx = ssl.create_default_context()
+      s = ctx.wrap_socket(s, server_hostname=host)
+    
+    s.connect((host, port))
 
-    #send request
-    s.send((f'GET {path} HTTP/1.0\r\n' + f'Host: {host}\r\n\r\n').encode())
+    # need to send the data in binary, which means encoding: https://www.python.org/dev/peps/pep-0498/#no-binary-f-strings
+    s.send((f'GET {path} HTTP/1.0\r\n' + f'Host: {host}\r\n\r\n').encode("utf8"))
 
     # socket.makefile returns the whole response associated with the socket (otherwise we'd need to loop over the response to parse it)
     response = s.makefile("r", encoding="utf8", newline="\r\n")
@@ -53,7 +64,6 @@ def request(url):
     return headers, body
 
 # Initial parser state machine to print just text, not tags, from an html page.
-# Two states: in_angle and not, transitions to in_angle with "<" and to not with ">"
 def show(body):
     in_angle = False
     for c in body:
@@ -67,6 +77,7 @@ def show(body):
 def load(url):
     headers, body = request(url)
     show(body)
+
 
 if __name__ == "__main__":
     import sys
