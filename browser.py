@@ -1,8 +1,11 @@
 import socket
 import ssl
 
-
-
+def addHeaders(request, headers):
+    for key, val in headers.items():
+        request += f'\r\n{key}: {val}'
+    return request + '\r\n\r\n'
+    
 
 def request(url):
     # Use socket to connect to the host, implementation of https://en.wikipedia.org/wiki/Berkeley_sockets
@@ -22,10 +25,12 @@ def request(url):
     # Split the URL into parts 
         # Scheme, describes how to retrieve the resource
         # Host and path describe where to get it and what to get from it
+        # Port specifies the connection interface to use
     scheme, url = url.split("://", 1)
     assert scheme in ["http", "https", "file"], \
     "Unknown scheme {}".format(scheme)
     host, path = url.split("/", 1)
+
 
     if ":" in host:
       host, port = host.split(":", 1)
@@ -34,18 +39,24 @@ def request(url):
     path = "/" + path
     port = 80 if scheme == "http" else 443
 
-
+    # wrap the socket with a ssl context if we're using https
     if scheme == "https":
       ctx = ssl.create_default_context()
       s = ctx.wrap_socket(s, server_hostname=host)
     
     s.connect((host, port))
 
+    request = f'GET {path} HTTP/1.1'
+    headers = {"Host":host, "Connection":"close", "User-Agent":"mcdat"}
+    requestWithHeaders = addHeaders(request, headers)
+    
+    print(requestWithHeaders)
+
     # need to send the data in binary, which means encoding: https://www.python.org/dev/peps/pep-0498/#no-binary-f-strings
-    s.send((f'GET {path} HTTP/1.0\r\n' + f'Host: {host}\r\n\r\n').encode("utf8"))
+    s.send(requestWithHeaders.encode("latin-1"))
 
     # socket.makefile returns the whole response associated with the socket (otherwise we'd need to loop over the response to parse it)
-    response = s.makefile("r", encoding="utf8", newline="\r\n")
+    response = s.makefile("r", encoding="latin-1", newline="\r\n")
     statusline = response.readline()
     version, status, explanation = statusline.split(" ", 2)
 
