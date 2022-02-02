@@ -1,13 +1,29 @@
 import socket
 import ssl
 
-def addHeaders(request, headers):
+URL_SCHEMES = ["http", "https", "file", "data", "view-source"]
+SUPPORTED_ENTITIES = {"&lt;":"<", "&gt;":">", "&amp;":"&"}
+
+def add_headers(request, headers):
     for key, val in headers.items():
         request += f'\r\n{key}: {val}'
     return request + '\r\n\r\n'
-    
+
+def print_entity(entity):
+    if entity in SUPPORTED_ENTITIES:
+        print(SUPPORTED_ENTITIES.get(entity), end="")    
+
+
+def transform(source_code):
+    for entity, reserved_char in SUPPORTED_ENTITIES.items():
+        source_code = source_code.replace(reserved_char, entity)
+    return f'<body>{source_code}</body>'
 
 def request(url):
+    if not url:
+        return {}, open('/home/mario/browser/browser.py', 'r')
+
+        
     # Use socket to connect to the host, implementation of https://en.wikipedia.org/wiki/Berkeley_sockets
         # AF = Address family, because it's a web browser we use INET6 instead of, say UNIX or BLUETOOTH.
         # Note: INET6 is compatible w/ IPv6 and backwards-compatible w/ IPv4
@@ -26,11 +42,18 @@ def request(url):
         # Scheme, describes how to retrieve the resource
         # Host and path describe where to get it and what to get from it
         # Port specifies the connection interface to use
-    scheme, url = url.split("://", 1)
-    assert scheme in ["http", "https", "file"], \
-    "Unknown scheme {}".format(scheme)
-    host, path = url.split("/", 1)
+    scheme, url = url.split(":", 1)
 
+    assert scheme in URL_SCHEMES, \
+    "Unknown scheme {}".format(scheme)
+
+    if scheme != "data":
+        print(url)
+        prefix, url = url.split("//", 1)
+
+    print(url)
+
+    host, path = url.split("/", 1)
 
     if ":" in host:
       host, port = host.split(":", 1)
@@ -43,15 +66,20 @@ def request(url):
     if scheme == "https":
       ctx = ssl.create_default_context()
       s = ctx.wrap_socket(s, server_hostname=host)
-    
+
+    if scheme == "file":
+        return {}, open(url, 'r')
+
+    if scheme == "data":
+        encoding, content = path.split(",", 1)
+        return {}, content
+        
     s.connect((host, port))
 
     request = f'GET {path} HTTP/1.1'
     headers = {"Host":host, "Connection":"close", "User-Agent":"mcdat"}
-    requestWithHeaders = addHeaders(request, headers)
+    requestWithHeaders = add_headers(request, headers)
     
-    print(requestWithHeaders)
-
     # need to send the data in binary, which means encoding: https://www.python.org/dev/peps/pep-0498/#no-binary-f-strings
     s.send(requestWithHeaders.encode("latin-1"))
 
@@ -72,18 +100,53 @@ def request(url):
 
     body = response.read()
     s.close()
+
+    if scheme == "view-source":
+        return headers, transform(body)
+
     return headers, body
 
 # Initial parser state machine to print just text, not tags, from an html page.
-def show(body):
+def show(source_text):
     in_angle = False
-    for c in body:
+    in_body = False
+    tag = ""
+    in_entity = False
+    entity = ""
+
+    for c in source_text:
         if c == "<":
             in_angle = True
+            continue
         elif c == ">":
             in_angle = False
-        elif not in_angle:
-            print(c, end="")
+            if tag == "body":
+                in_body = True
+            elif tag == "/body":
+                in_body = False
+            tag = ""
+            continue
+        elif in_angle:
+            tag += c
+            continue
+
+        if not in_body:
+            continue   
+
+        if c == "&":
+            in_entity = True
+            entity += c
+            continue
+        elif in_entity and c == ";":
+            in_entity = False
+            entity +=c
+            print_entity(entity)
+            entity = ""
+            continue
+        elif in_entity:
+            entity +=c
+        if not in_entity:
+             print(c, end="")
 
 def load(url):
     headers, body = request(url)
@@ -92,4 +155,10 @@ def load(url):
 
 if __name__ == "__main__":
     import sys
-    load(sys.argv[1])
+    if len(sys.argv) == 1:
+        load("")
+    elif len(sys.argv) == 2:
+        load(sys.argv[1])
+    else:
+        raise Exception(f'Too many arguments. Expected 1, given {len(sys.argv) -1}')
+    
