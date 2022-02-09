@@ -2,7 +2,13 @@ import socket
 import ssl
 import gzip
 import pdb
+from datetime import datetime, timedelta
+import json
+import redis
 
+r = redis.Redis()
+
+MAX_REDIRECTS = 20
 URL_SCHEMES = ["http", "https", "file", "data", "view-source"]
 SUPPORTED_ENTITIES = {"&lt;": "<", "&gt;": ">"}
 
@@ -11,22 +17,29 @@ def add_headers(request, headers):
         request += f"\r\n{key}: {val}"
     return request + "\r\n\r\n"
 
-
 def print_entity(entity):
     if entity in SUPPORTED_ENTITIES:
         print(SUPPORTED_ENTITIES.get(entity), end="")
-
 
 def transform(source_code):
     for entity, reserved_char in SUPPORTED_ENTITIES.items():
         source_code = source_code.replace(reserved_char, entity)
     return f"<body>{source_code}</body>"
 
-    
+def request(url, redirects):
 
-def request(url):
     if not url:
         return {}, open("/home/mario/browser/browser.py", "r")
+
+    if r.exists(url):
+        headers = r.hget(url, 'headers')
+        body = r.hget(url, 'body')
+        breakpoint()
+        return headers, body.decode("utf-8")
+
+    if redirects > MAX_REDIRECTS:
+        return {}, "Too many redirects"
+
 
     # Use socket to connect to the host, implementation of https://en.wikipedia.org/wiki/Berkeley_sockets
     # AF = Address family, because it's a web browser we use INET6 instead of, say UNIX or BLUETOOTH.
@@ -77,14 +90,14 @@ def request(url):
 
     s.connect((host, port))
 
-    request = f"GET {path} HTTP/1.1"
+    path_and_protocol = f"GET {path} HTTP/1.1"
     headers = {
         "Host": host,
         "Connection": "close",
         "User-Agent": "mcdat",
         "Accept-Encoding": "gzip",
     }
-    requestWithHeaders = add_headers(request, headers)
+    requestWithHeaders = add_headers(path_and_protocol, headers)
 
     # need to send the data in binary, which means encoding: https://www.python.org/dev/peps/pep-0498/#no-binary-f-strings
     s.send(requestWithHeaders.encode("utf-8"))
@@ -94,9 +107,6 @@ def request(url):
 
     statusline = response.readline().decode("utf-8")
     version, status, explanation = statusline.split(" ", 2)
-
-    # assert OK status, throw an error for non 200 return codes (300s for redirects, 400 for client errors, 500 for server errors etc.)
-    assert status == "200", "{}: {}".format(status, explanation)
     # Parse headers
 
     headers = {}
@@ -106,32 +116,55 @@ def request(url):
             break
         header, value = line.split(":", 1)
         headers[header.lower()] = value.strip()
+    
+    # increment redirects to limit the amount of times we can be redirected and avoid loops
+    if status == "301":
+        if headers["location"][0] == "/":
+            return request(f'{scheme}://{host}{path}')
+        return request(headers["location"], redirects + 1)
 
+    
+    # assert OK status, throw an error for non 200 return codes (300s for redirects, 400 for client errors, 500 for server errors etc.)
+    assert status == "200", "{}: {}".format(status, explanation)
+
+
+    if "content-encoding" in headers and headers["content-encoding"] != "gzip":
+        body = response.read().decode("utf-8")
+    elif headers["content-encoding"] == gzip:
+        body = gzip.decompress(response.read())
+
+    # 'chunked' data must be processed, decompressed and recombined
     if "transfer-encoding" in headers and headers["transfer-encoding"] == "chunked":
         lines = response.read().split(b'\r\n')
-        pdb.set_trace()
         body = ''
         for index, line in enumerate(lines):
             if index % 2 == 0:
                 continue
             else:
                 body += gzip.decompress(line).decode("utf-8")
-
-    if headers["content-encoding"] != "gzip":
+    # if it's not chunked but still compressed, it must be decompressed
+    elif headers["content-encoding"] == "gzip":
+        body = gzip.decompress(response.read()).decode("utf-8")
+    # if it's not compressed, can simply decode the bytes from the response.
+    else:
         body = response.read().decode("utf-8")
 
-    # if headers["transfer-encoding"] == "chunked":
-    #     pdb.set_trace()
-
-    # body = gzip.decompress(response.read()).decode("utf-8")
-
     s.close()
-
+    # when viewing source code, transform so that reserved characters are rendered as entities
     if scheme == "view-source":
         body = transform(body)
 
-    return headers, body
+    breakpoint()
 
+    #
+    if "cache-control" in headers and headers["cache-control"] != "no-store":
+        r.hset(f'{scheme}://{host}{path}', 'headers', json.dumps(headers))
+        r.hset(f'{scheme}://{host}{path}', 'body', body)
+        maxage = int(headers['cache-control'].split('=')[1])
+        age = int(headers['age'])
+        r.expire(f'{scheme}://{host}{path}', maxage - age)
+
+    return headers, body
 
 # Initial parser state machine to print just text, not tags, from an html page.
 def show(source_text):
@@ -147,7 +180,7 @@ def show(source_text):
             continue
         elif c == ">":
             in_angle = False
-            if tag == "body":
+            if tag == "body" or tag.split(" ")[0] == "body":
                 in_body = True
             elif tag == "/body":
                 in_body = False
@@ -175,11 +208,9 @@ def show(source_text):
         if not in_entity:
             print(c, end="")
 
-
 def load(url):
-    headers, body = request(url)
+    headers, body = request(url, 0)
     show(body)
-
 
 if __name__ == "__main__":
     import sys
