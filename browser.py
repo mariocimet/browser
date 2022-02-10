@@ -5,6 +5,7 @@ import pdb
 from datetime import datetime, timedelta
 import json
 import redis
+import re
 
 r = redis.Redis()
 
@@ -34,7 +35,6 @@ def request(url, redirects):
     if r.exists(url):
         headers = r.hget(url, 'headers')
         body = r.hget(url, 'body')
-        breakpoint()
         return headers, body.decode("utf-8")
 
     if redirects > MAX_REDIRECTS:
@@ -154,10 +154,8 @@ def request(url, redirects):
     if scheme == "view-source":
         body = transform(body)
 
-    breakpoint()
-
-    #
-    if "cache-control" in headers and headers["cache-control"] != "no-store":
+    # only cache if cache-control header gives us a max age.
+    if "cache-control" in headers and re.match(r'max-age=[0-9]+', headers["cache-control"]):
         r.hset(f'{scheme}://{host}{path}', 'headers', json.dumps(headers))
         r.hset(f'{scheme}://{host}{path}', 'body', body)
         maxage = int(headers['cache-control'].split('=')[1])
