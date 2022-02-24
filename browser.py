@@ -6,12 +6,39 @@ from datetime import datetime, timedelta
 import json
 import redis
 import re
+import tkinter
+
 
 r = redis.Redis()
-
+WIDTH, HEIGHT = 800, 600
 MAX_REDIRECTS = 20
 URL_SCHEMES = ["http", "https", "file", "data", "view-source"]
-SUPPORTED_ENTITIES = {"&lt;": "<", "&gt;": ">"}
+SUPPORTED_ENTITIES = {"&lt;": "<", "&gt;": ">", "&amp;":"&"}
+
+class Browser:
+    def __init__(self):
+        self.window = tkinter.Tk()
+        self.canvas = tkinter.Canvas(
+            self.window, 
+            width=WIDTH,
+            height=HEIGHT
+        )
+        self.canvas.pack()
+
+    def load(self, url):
+        headers, body = request(url, 0)
+        text = lex(body)
+        HSTEP, VSTEP = 13, 18
+        cursor_x, cursor_y = HSTEP, VSTEP
+        for c in text:
+            self.canvas.create_text(cursor_x, cursor_y, text=c)
+            cursor_x += HSTEP
+            if cursor_x >= WIDTH:
+                cursor_x = HSTEP
+                cursor_y +=VSTEP
+
+
+
 
 def add_headers(request, headers):
     for key, val in headers.items():
@@ -20,7 +47,9 @@ def add_headers(request, headers):
 
 def print_entity(entity):
     if entity in SUPPORTED_ENTITIES:
-        print(SUPPORTED_ENTITIES.get(entity), end="")
+        return SUPPORTED_ENTITIES.get(entity)
+    else:
+        return entity
 
 def transform(source_code):
     for entity, reserved_char in SUPPORTED_ENTITIES.items():
@@ -136,12 +165,14 @@ def request(url, redirects):
     # 'chunked' data must be processed, decompressed and recombined
     if "transfer-encoding" in headers and headers["transfer-encoding"] == "chunked":
         lines = response.read().split(b'\r\n')
-        body = ''
+        body = b''
         for index, line in enumerate(lines):
             if index % 2 == 0:
                 continue
             else:
-                body += gzip.decompress(line).decode("utf-8")
+                body += line
+
+        body = gzip.decompress(body).decode("utf-8")
     # if it's not chunked but still compressed, it must be decompressed
     elif headers["content-encoding"] == "gzip":
         body = gzip.decompress(response.read()).decode("utf-8")
@@ -165,12 +196,13 @@ def request(url, redirects):
     return headers, body
 
 # Initial parser state machine to print just text, not tags, from an html page.
-def show(source_text):
+def lex(source_text):
     in_angle = False
     in_body = False
     tag = ""
     in_entity = False
     entity = ""
+    text = ''
 
     for c in source_text:
         if c == "<":
@@ -198,24 +230,21 @@ def show(source_text):
         elif in_entity and c == ";":
             in_entity = False
             entity += c
-            print_entity(entity)
+            text += print_entity(entity)
             entity = ""
             continue
         elif in_entity:
             entity += c
         if not in_entity:
-            print(c, end="")
-
-def load(url):
-    headers, body = request(url, 0)
-    show(body)
+            text += c
+    return text
 
 if __name__ == "__main__":
     import sys
 
-    if len(sys.argv) == 1:
-        load("")
-    elif len(sys.argv) == 2:
-        load(sys.argv[1])
+    if len(sys.argv) == 2:
+        Browser().load(sys.argv[1])
+        tkinter.mainloop()
+
     else:
-        raise Exception(f"Too many arguments. Expected 1, given {len(sys.argv) -1}")
+        raise Exception(f"Wrong number of arguments. Expected 1, given {len(sys.argv) -1}")
