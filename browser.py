@@ -8,9 +8,10 @@ import redis
 import re
 import tkinter
 
-
 r = redis.Redis()
 WIDTH, HEIGHT = 800, 600
+HSTEP, VSTEP = 13, 18
+SCROLL_STEP = 100
 MAX_REDIRECTS = 20
 URL_SCHEMES = ["http", "https", "file", "data", "view-source"]
 SUPPORTED_ENTITIES = {"&lt;": "<", "&gt;": ">", "&amp;":"&"}
@@ -24,21 +25,30 @@ class Browser:
             height=HEIGHT
         )
         self.canvas.pack()
+        self.scroll = 0
+        self.window.bind("<Down>", self.scrolldown)  
+        self.window.bind("<Up>", self.scrollup)
 
     def load(self, url):
         headers, body = request(url, 0)
         text = lex(body)
-        HSTEP, VSTEP = 13, 18
-        cursor_x, cursor_y = HSTEP, VSTEP
-        for c in text:
-            self.canvas.create_text(cursor_x, cursor_y, text=c)
-            cursor_x += HSTEP
-            if cursor_x >= WIDTH:
-                cursor_x = HSTEP
-                cursor_y +=VSTEP
+        self.display_list = layout(text)
+        self.draw()
 
+    def draw(self):
+        self.canvas.delete("all")
+        for x, y, c in self.display_list:
+            if y > self.scroll + HEIGHT: continue
+            if y + VSTEP < self.scroll: continue
+            self.canvas.create_text(x, y - self.scroll, text=c)
 
+    def scrolldown(self, e):
+        self.scroll += SCROLL_STEP
+        self.draw()
 
+    def scrollup(self, e):
+        self.scroll -= SCROLL_STEP
+        self.draw()
 
 def add_headers(request, headers):
     for key, val in headers.items():
@@ -68,7 +78,6 @@ def request(url, redirects):
 
     if redirects > MAX_REDIRECTS:
         return {}, "Too many redirects"
-
 
     # Use socket to connect to the host, implementation of https://en.wikipedia.org/wiki/Berkeley_sockets
     # AF = Address family, because it's a web browser we use INET6 instead of, say UNIX or BLUETOOTH.
@@ -152,10 +161,8 @@ def request(url, redirects):
             return request(f'{scheme}://{host}{path}')
         return request(headers["location"], redirects + 1)
 
-    
     # assert OK status, throw an error for non 200 return codes (300s for redirects, 400 for client errors, 500 for server errors etc.)
     assert status == "200", "{}: {}".format(status, explanation)
-
 
     if "content-encoding" in headers and headers["content-encoding"] != "gzip":
         body = response.read().decode("utf-8")
@@ -238,6 +245,22 @@ def lex(source_text):
         if not in_entity:
             text += c
     return text
+
+#screen coordinates and page coordinates are different things
+#layout is about page coordinates - where each character should live on a complete representation of a page
+#rendering is about screen coordinates, how the page layout should be displayed to a user at a particular moment
+#text -> display list, given vertical and horizontal step values defined in HSTEP and VSTEP
+def layout(text):
+    display_list = []
+    cursor_x, cursor_y = HSTEP, VSTEP
+    for c in text:
+        display_list.append((cursor_x, cursor_y, c))
+        if cursor_x >= WIDTH - HSTEP:
+          cursor_y += VSTEP
+          cursor_x = HSTEP
+        else:
+          cursor_x += HSTEP
+    return display_list
 
 if __name__ == "__main__":
     import sys
